@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include "darknet.h"
 #include "parser.h"
 #include "utils.h"
 #include "cuda.h"
@@ -13,7 +12,14 @@
 #include "opencv2/highgui/highgui_c.h"
 #endif
 
+#ifdef _DEBUG
+#define _CRTDBG_MAP_ALLOC
+#include <crtdbg.h>
+#define new DEBUG_CLIENTBLOCK
+#endif
+
 extern void predict_classifier(char *datacfg, char *cfgfile, char *weightfile, char *filename, int top);
+extern void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filename, float thresh, int ext_output);
 extern void run_voxel(int argc, char **argv);
 extern void run_yolo(int argc, char **argv);
 extern void run_detector(int argc, char **argv);
@@ -370,8 +376,6 @@ int main(int argc, char **argv)
     gpu_index = find_int_arg(argc, argv, "-i", 0);
     if(find_arg(argc, argv, "-nogpu")) {
         gpu_index = -1;
-        printf("\n Currently Darknet doesn't support -nogpu flag. If you want to use CPU - please compile Darknet with GPU=0 in the Makefile, or compile darknet_no_gpu.sln on Windows.\n");
-        exit(-1);
     }
 
 #ifndef GPU
@@ -397,7 +401,7 @@ int main(int argc, char **argv)
         float thresh = find_float_arg(argc, argv, "-thresh", .24);
 		int ext_output = find_arg(argc, argv, "-ext_output");
         char *filename = (argc > 4) ? argv[4]: 0;
-        test_detector("cfg/coco.data", argv[2], argv[3], filename, thresh, 0.5, 0, 1, 0, NULL);
+        test_detector("cfg/coco.data", argv[2], argv[3], filename, thresh, ext_output);
     } else if (0 == strcmp(argv[1], "cifar")){
         run_cifar(argc, argv);
     } else if (0 == strcmp(argv[1], "go")){

@@ -1,7 +1,20 @@
 #ifndef OPTION_LIST_H
 #define OPTION_LIST_H
 #include "list.h"
-#include "darknet.h"
+
+#ifdef YOLODLL_EXPORTS
+#if defined(_MSC_VER)
+#define YOLODLL_API __declspec(dllexport) 
+#else
+#define YOLODLL_API __attribute__((visibility("default")))
+#endif
+#else
+#if defined(_MSC_VER)
+#define YOLODLL_API
+#else
+#define YOLODLL_API
+#endif
+#endif
 
 typedef struct{
     char *key;
@@ -21,11 +34,11 @@ float option_find_float(list *l, char *key, float def);
 float option_find_float_quiet(list *l, char *key, float def);
 void option_unused(list *l);
 
-//typedef struct {
-//	int classes;
-//	char **names;
-//} metadata;
+typedef struct {
+	int classes;
+	char **names;
+} metadata;
 
-//LIB_API metadata get_metadata(char *file);
+YOLODLL_API metadata get_metadata(char *file);
 
 #endif

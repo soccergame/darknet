@@ -165,7 +165,7 @@ convolutional_layer parse_convolutional(list *options, size_params params)
     int xnor = option_find_int_quiet(options, "xnor", 0);
     int use_bin_output = option_find_int_quiet(options, "bin_output", 0);
 
-    convolutional_layer layer = make_convolutional_layer(batch,h,w,c,n,size,stride,padding,activation, batch_normalize, binary, xnor, params.net.adam, use_bin_output, params.index);
+    convolutional_layer layer = make_convolutional_layer(batch,h,w,c,n,size,stride,padding,activation, batch_normalize, binary, xnor, params.net.adam, use_bin_output);
     layer.flipped = option_find_int_quiet(options, "flipped", 0);
     layer.dot = option_find_float_quiet(options, "dot", 0);
 
@@ -233,17 +233,12 @@ connected_layer parse_connected(list *options, size_params params)
 
 softmax_layer parse_softmax(list *options, size_params params)
 {
-	int groups = option_find_int_quiet(options, "groups", 1);
-	softmax_layer layer = make_softmax_layer(params.batch, params.inputs, groups);
-	layer.temperature = option_find_float_quiet(options, "temperature", 1);
-	char *tree_file = option_find_str(options, "tree", 0);
-	if (tree_file) layer.softmax_tree = read_tree(tree_file);
-	layer.w = params.w;
-	layer.h = params.h;
-	layer.c = params.c;
-	layer.spatial = option_find_float_quiet(options, "spatial", 0);
-	layer.noloss = option_find_int_quiet(options, "noloss", 0);
-	return layer;
+    int groups = option_find_int_quiet(options, "groups",1);
+    softmax_layer layer = make_softmax_layer(params.batch, params.inputs, groups);
+    layer.temperature = option_find_float_quiet(options, "temperature", 1);
+    char *tree_file = option_find_str(options, "tree", 0);
+    if (tree_file) layer.softmax_tree = read_tree(tree_file);
+    return layer;
 }
 
 int *parse_yolo_mask(char *a, int *num)
@@ -655,8 +650,7 @@ void parse_net_options(list *options, network *net)
     net->policy = get_policy(policy_s);
     net->burn_in = option_find_int_quiet(options, "burn_in", 0);
 #ifdef CUDNN_HALF
-    //net->burn_in = 0;
-    net->cudnn_half = 1;
+    net->burn_in = 0;
 #endif
     if(net->policy == STEP){
         net->step = option_find_int(options, "step", 1);
@@ -732,8 +726,6 @@ network parse_network_cfg_custom(char *filename, int batch)
 
     float bflops = 0;
     size_t workspace_size = 0;
-    size_t max_inputs = 0;
-    size_t max_outputs = 0;
     n = n->next;
     int count = 0;
     free_section(s);
@@ -805,12 +797,9 @@ network parse_network_cfg_custom(char *filename, int batch)
         l.stopbackward = option_find_int_quiet(options, "stopbackward", 0);
         l.dontload = option_find_int_quiet(options, "dontload", 0);
         l.dontloadscales = option_find_int_quiet(options, "dontloadscales", 0);
-        l.learning_rate_scale = option_find_float_quiet(options, "learning_rate", 1);
         option_unused(options);
         net.layers[count] = l;
         if (l.workspace_size > workspace_size) workspace_size = l.workspace_size;
-        if (l.inputs > max_inputs) max_inputs = l.inputs;
-        if (l.outputs > max_outputs) max_outputs = l.outputs;
         free_section(s);
         n = n->next;
         ++count;
@@ -833,14 +822,6 @@ network parse_network_cfg_custom(char *filename, int batch)
             net.workspace = cuda_make_array(0, workspace_size/sizeof(float) + 1);
             int size = get_network_input_size(net) * net.batch;
             net.input_state_gpu = cuda_make_array(0, size);
-
-            // pre-allocate memory for inference on Tensor Cores (fp16)
-            if (net.cudnn_half) {
-                *net.max_input16_size = max_inputs;
-                check_error(cudaMalloc((void **)net.input16_gpu, *net.max_input16_size * sizeof(short))); //sizeof(half)
-                *net.max_output16_size = max_outputs;
-                check_error(cudaMalloc((void **)net.output16_gpu, *net.max_output16_size * sizeof(short))); //sizeof(half)
-            }
         }else {
             net.workspace = calloc(1, workspace_size);
         }
@@ -990,12 +971,12 @@ void save_weights_upto(network net, char *filename, int cutoff)
     if(!fp) file_error(filename);
 
     int major = 0;
-    int minor = 2;
-    int revision = 5;
+    int minor = 1;
+    int revision = 0;
     fwrite(&major, sizeof(int), 1, fp);
     fwrite(&minor, sizeof(int), 1, fp);
     fwrite(&revision, sizeof(int), 1, fp);
-    fwrite(net.seen, sizeof(uint64_t), 1, fp);
+    fwrite(net.seen, sizeof(int), 1, fp);
 
     int i;
     for(i = 0; i < net.n && i < cutoff; ++i){
@@ -1191,9 +1172,7 @@ void load_weights_upto(network *net, char *filename, int cutoff)
     }
     else {
         printf("\n seen 32 \n");
-        uint32_t iseen = 0;
-        fread(&iseen, sizeof(uint32_t), 1, fp);
-        *net->seen = iseen;
+        fread(net->seen, sizeof(int), 1, fp);
     }
     int transpose = (major > 1000) || (minor > 1000);
 
@@ -1249,28 +1228,3 @@ void load_weights(network *net, char *filename)
     load_weights_upto(net, filename, net->n);
 }
 
-// load network & force - set batch size
-network *load_network_custom(char *cfg, char *weights, int clear, int batch)
-{
-    printf(" Try to load cfg: %s, weights: %s, clear = %d \n", cfg, weights, clear);
-    network *net = calloc(1, sizeof(network));
-    *net = parse_network_cfg_custom(cfg, batch);
-    if (weights && weights[0] != 0) {
-        load_weights(net, weights);
-    }
-    if (clear) (*net->seen) = 0;
-    return net;
-}
-
-// load network & get batch size from cfg-file
-network *load_network(char *cfg, char *weights, int clear)
-{
-    printf(" Try to load cfg: %s, weights: %s, clear = %d \n", cfg, weights, clear);
-    network *net = calloc(1, sizeof(network));
-    *net = parse_network_cfg(cfg);
-    if (weights && weights[0] != 0) {
-        load_weights(net, weights);
-    }
-    if (clear) (*net->seen) = 0;
-    return net;
-}

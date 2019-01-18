@@ -364,7 +364,6 @@ void avg_flipped_yolo(layer l)
 
 int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh, int *map, int relative, detection *dets, int letter)
 {
-    //printf("\n l.batch = %d, l.w = %d, l.h = %d, l.n = %d \n", l.batch, l.w, l.h, l.n);
     int i,j,n;
     float *predictions = l.output;
     if (l.batch == 2) avg_flipped_yolo(l);
@@ -375,20 +374,17 @@ int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh,
         for(n = 0; n < l.n; ++n){
             int obj_index  = entry_index(l, 0, n*l.w*l.h + i, 4);
             float objectness = predictions[obj_index];
-            //if(objectness <= thresh) continue;    // incorrect behavior for Nan values
-            if (objectness > thresh) {
-                //printf("\n objectness = %f, thresh = %f, i = %d, n = %d \n", objectness, thresh, i, n);
-                int box_index = entry_index(l, 0, n*l.w*l.h + i, 0);
-                dets[count].bbox = get_yolo_box(predictions, l.biases, l.mask[n], box_index, col, row, l.w, l.h, netw, neth, l.w*l.h);
-                dets[count].objectness = objectness;
-                dets[count].classes = l.classes;
-                for (j = 0; j < l.classes; ++j) {
-                    int class_index = entry_index(l, 0, n*l.w*l.h + i, 4 + 1 + j);
-                    float prob = objectness*predictions[class_index];
-                    dets[count].prob[j] = (prob > thresh) ? prob : 0;
-                }
-                ++count;
+            if(objectness <= thresh) continue;
+            int box_index  = entry_index(l, 0, n*l.w*l.h + i, 0);
+            dets[count].bbox = get_yolo_box(predictions, l.biases, l.mask[n], box_index, col, row, l.w, l.h, netw, neth, l.w*l.h);
+            dets[count].objectness = objectness;
+            dets[count].classes = l.classes;
+            for(j = 0; j < l.classes; ++j){
+                int class_index = entry_index(l, 0, n*l.w*l.h + i, 4 + 1 + j);
+                float prob = objectness*predictions[class_index];
+                dets[count].prob[j] = (prob > thresh) ? prob : 0;
             }
+            ++count;
         }
     }
     correct_yolo_boxes(dets, count, w, h, netw, neth, relative, letter);
@@ -399,15 +395,14 @@ int get_yolo_detections(layer l, int w, int h, int netw, int neth, float thresh,
 
 void forward_yolo_layer_gpu(const layer l, network_state state)
 {
-    //copy_ongpu(l.batch*l.inputs, state.input, 1, l.output_gpu, 1);
-    simple_copy_ongpu(l.batch*l.inputs, state.input, l.output_gpu);
+    copy_ongpu(l.batch*l.inputs, state.input, 1, l.output_gpu, 1);
     int b, n;
     for (b = 0; b < l.batch; ++b){
         for(n = 0; n < l.n; ++n){
             int index = entry_index(l, b, n*l.w*l.h, 0);
-            activate_array_ongpu(l.output_gpu + index, 2*l.w*l.h, LOGISTIC);    // x,y
+            activate_array_ongpu(l.output_gpu + index, 2*l.w*l.h, LOGISTIC);
             index = entry_index(l, b, n*l.w*l.h, 4);
-            activate_array_ongpu(l.output_gpu + index, (1+l.classes)*l.w*l.h, LOGISTIC); // classes and objectness
+            activate_array_ongpu(l.output_gpu + index, (1+l.classes)*l.w*l.h, LOGISTIC);
         }
     }
     if(!state.train || l.onlyforward){

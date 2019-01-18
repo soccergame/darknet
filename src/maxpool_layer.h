@@ -17,8 +17,7 @@ void backward_maxpool_layer(const maxpool_layer l, network_state state);
 #ifdef GPU
 void forward_maxpool_layer_gpu(maxpool_layer l, network_state state);
 void backward_maxpool_layer_gpu(maxpool_layer l, network_state state);
-void cudnn_maxpool_setup(maxpool_layer *l);
-#endif // GPU
+#endif
 
 #endif
 

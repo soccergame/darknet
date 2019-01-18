@@ -19,32 +19,6 @@ image get_maxpool_delta(maxpool_layer l)
     return float_to_image(w,h,c,l.delta);
 }
 
-
-void cudnn_maxpool_setup(layer *l)
-{
-#ifdef CUDNN
-    cudnnStatus_t maxpool_status;
-    maxpool_status = cudnnCreatePoolingDescriptor(&l->poolingDesc);
-
-    maxpool_status = cudnnSetPooling2dDescriptor(
-        l->poolingDesc,
-        CUDNN_POOLING_MAX,
-        CUDNN_PROPAGATE_NAN,    // CUDNN_PROPAGATE_NAN, CUDNN_NOT_PROPAGATE_NAN
-        l->size,
-        l->size,
-        0, //l.pad,
-        0, //l.pad,
-        l->stride,
-        l->stride);
-
-    cudnnCreateTensorDescriptor(&l->srcTensorDesc);
-    cudnnCreateTensorDescriptor(&l->dstTensorDesc);
-    cudnnSetTensor4dDescriptor(l->srcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->c, l->h, l->w);
-    cudnnSetTensor4dDescriptor(l->dstTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->out_c, l->out_h, l->out_w);
-#endif // CUDNN
-}
-
-
 maxpool_layer make_maxpool_layer(int batch, int h, int w, int c, int size, int stride, int padding)
 {
     maxpool_layer l = {0};
@@ -73,10 +47,7 @@ maxpool_layer make_maxpool_layer(int batch, int h, int w, int c, int size, int s
     l.indexes_gpu = cuda_make_int_array(output_size);
     l.output_gpu  = cuda_make_array(l.output, output_size);
     l.delta_gpu   = cuda_make_array(l.delta, output_size);
-
-    cudnn_maxpool_setup(&l);
-
-    #endif  // GPU
+    #endif
 	l.bflops = (l.size*l.size*l.c * l.out_h*l.out_w) / 1000000000.;
     fprintf(stderr, "max          %d x %d / %d  %4d x%4d x%4d   ->  %4d x%4d x%4d %5.3f BF\n", size, size, stride, w, h, c, l.out_w, l.out_h, l.out_c, l.bflops);
     return l;
@@ -104,8 +75,6 @@ void resize_maxpool_layer(maxpool_layer *l, int w, int h)
     l->indexes_gpu = cuda_make_int_array(output_size);
     l->output_gpu  = cuda_make_array(l->output, output_size);
     l->delta_gpu   = cuda_make_array(l->delta,  output_size);
-
-    cudnn_maxpool_setup(l);
     #endif
 }
 

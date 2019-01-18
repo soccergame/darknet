@@ -571,7 +571,6 @@ __global__ void float_to_bit_gpu_kernel(float *src, unsigned char *dst, size_t s
 }
 */
 
-/*
 __global__ void float_to_bit_gpu_kernel(float *src, unsigned char *dst, size_t size)
 {
     //const int size_aligned = size + (WARP_SIZE - size % WARP_SIZE);
@@ -592,7 +591,6 @@ __global__ void float_to_bit_gpu_kernel(float *src, unsigned char *dst, size_t s
         const int lane_id = threadIdx.x % WARP_SIZE;
 
         uint32_t bit_mask = __ballot(src_val > 0);
-
         if (lane_id == 0) tmp[warp_id] = bit_mask;
 
         __syncthreads();
@@ -604,38 +602,11 @@ __global__ void float_to_bit_gpu_kernel(float *src, unsigned char *dst, size_t s
         __syncthreads();
     }
 }
-*/
-
-__global__ void float_to_bit_gpu_kernel(float *src, unsigned char *dst, size_t size)
-{
-    __shared__ uint32_t tmp[WARP_SIZE*32];
-
-    int index = 32*blockIdx.x*blockDim.x + threadIdx.x;
-    float src_val;
-    uint32_t *dst32_ptr = ((unsigned int*)dst);
-
-    int i;
-    for(i = 0; i < 32; ++i)
-    {
-        if ((index + i * 1024) < size) src_val = src[index + i*1024];
-        else src_val = 0;
-        //unsigned int bit_mask = __ballot_sync(0xffffffff, src_val > 0);
-        const int num_of_warps = blockDim.x / WARP_SIZE;
-        const int warp_id = threadIdx.x / WARP_SIZE;
-        const int lane_id = threadIdx.x % WARP_SIZE;
-
-        uint32_t bit_mask = __ballot(src_val > 0);
-        if (lane_id == 0) tmp[i * 32 + warp_id] = bit_mask;
-    }
-    __syncthreads();
-    dst32_ptr[blockIdx.x*blockDim.x + threadIdx.x] = tmp[threadIdx.x];
-}
 
 
 void float_to_bit_gpu(float *src, unsigned char *dst, size_t size)
 {
-    //const int num_blocks = size / 1024 + 1;
-    const int num_blocks = size / (32*1024) + 1;
+    const int num_blocks = size / 1024 + 1;
     float_to_bit_gpu_kernel<<<num_blocks, 1024, 0, get_cuda_stream()>>>(src, dst, size);
 }
 // --------------------------------
@@ -676,13 +647,7 @@ __device__ __host__ unsigned char reverse_byte_2(unsigned char a)
     return ((a * 0x0802LU & 0x22110LU) | (a * 0x8020LU & 0x88440LU)) * 0x10101LU >> 16;
 }
 
-__device__ unsigned char reverse_byte_CUDA(unsigned char a)
-{
-    uint32_t tmp = __brev(a);
-    return tmp >> 24;
-}
-
-__device__ void transpose8rS32_reversed_diagonale(unsigned char* A, unsigned char* B, int m, int n)
+__device__ __host__ void transpose8rS32_reversed_diagonale(unsigned char* A, int m, int n, unsigned char* B)
 {
     unsigned x, y, t;
 
@@ -700,8 +665,8 @@ __device__ void transpose8rS32_reversed_diagonale(unsigned char* A, unsigned cha
     y = ((x << 4) & 0xF0F0F0F0) | (y & 0x0F0F0F0F);
     x = t;
 
-    B[7 * n] = reverse_byte_CUDA(x >> 24);  B[6 * n] = reverse_byte_CUDA(x >> 16);  B[5 * n] = reverse_byte_CUDA(x >> 8);  B[4 * n] = reverse_byte_CUDA(x);
-    B[3 * n] = reverse_byte_CUDA(y >> 24);  B[2 * n] = reverse_byte_CUDA(y >> 16);  B[1 * n] = reverse_byte_CUDA(y >> 8);  B[0 * n] = reverse_byte_CUDA(y);
+    B[7 * n] = reverse_byte(x >> 24);  B[6 * n] = reverse_byte(x >> 16);  B[5 * n] = reverse_byte(x >> 8);  B[4 * n] = reverse_byte(x);
+    B[3 * n] = reverse_byte(y >> 24);  B[2 * n] = reverse_byte(y >> 16);  B[1 * n] = reverse_byte(y >> 8);  B[0 * n] = reverse_byte(y);
 
     //__device__ ​ unsigned int 	__brev(unsigned int  x)
     //Reverse the bit order of a 32 bit unsigned integer.
@@ -709,7 +674,6 @@ __device__ void transpose8rS32_reversed_diagonale(unsigned char* A, unsigned cha
 }
 
 
-// transpose 8x8 bit
 __global__ void transpose_bin_gpu_kernel(unsigned char *A, unsigned char *B, const int n, const int m,
     const int lda, const int ldb, const int block_size)
 {
@@ -723,367 +687,30 @@ __global__ void transpose_bin_gpu_kernel(unsigned char *A, unsigned char *B, con
         //for (j = 0; j < m - 8; j += 8)
         {
             j = ((index * 8) / n) * 8;
-            if (j < m) {
+            if (j < m - 8) {
                 int a_index = i*lda + j;
                 int b_index = j*ldb + i;
-                transpose8rS32_reversed_diagonale(&A[a_index / 8], &B[b_index / 8], lda / 8, ldb / 8);
+                transpose8rS32_reversed_diagonale(&A[a_index / 8], lda / 8, ldb / 8, &B[b_index / 8]);
             }
-            //else if (j < m) {
-            //    for (; j < m; ++j) {
-            //        if (get_bit(A, i*lda + j)) set_bit(B, j*ldb + i);
-            //        else remove_bit(B, j*ldb + i);
-            //    }
-            //}
-        }
-    }
-}
-
-
-
-__device__ __host__ uint8_t reverse_8_bit(uint8_t a) {
-    return ((a * 0x0802LU & 0x22110LU) | (a * 0x8020LU & 0x88440LU)) * 0x10101LU >> 16;
-}
-
-__device__ uint32_t reverse_32_bit(uint32_t a)
-{
-    // __device__ ​ unsigned int __brev(unsigned int  x) // CUDA
-    // unsigned int __rbit(unsigned int val) // for ARM    //__asm__("rbit %0, %1\n" : "=r"(output) : "r"(input));
-    return __brev(a);
-    //return (reverse_8_bit(a >> 24) << 0) |
-    //    (reverse_8_bit(a >> 16) << 8) |
-    //    (reverse_8_bit(a >> 8) << 16) |
-    //    (reverse_8_bit(a >> 0) << 24);
-}
-
-#define swap(a0, a1, j, m) t = (a0 ^ (a1 >>j)) & m; a0 = a0 ^ t; a1 = a1 ^ (t << j);
-
-__device__ void transpose32_optimized(uint32_t A[32]) {
-    int j, k;
-    unsigned m, t;
-
-    //m = 0x0000FFFF;
-    //for (j = 16; j != 0; j = j >> 1, m = m ^ (m << j)) {
-    //    for (k = 0; k < 32; k = (k + j + 1) & ~j) {
-    //        t = (A[k] ^ (A[k + j] >> j)) & m;
-    //        A[k] = A[k] ^ t;
-    //        A[k + j] = A[k + j] ^ (t << j);
-    //    }
-    //}
-
-    j = 16;
-    m = 0x0000FFFF;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 8;
-    m = 0x00ff00ff;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 4;
-    m = 0x0f0f0f0f;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 2;
-    m = 0x33333333;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 1;
-    m = 0x55555555;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    // reverse Y
-    for (j = 0; j < 16; ++j) {
-        uint32_t tmp = A[j];
-        A[j] = reverse_32_bit(A[31 - j]);
-        A[31 - j] = reverse_32_bit(tmp);
-    }
-}
-
-#define BLOCK_TRANSPOSE32 256
-
-__device__ void transpose_32x32_bits_reversed_diagonale(uint32_t *A, uint32_t *B, int m, int n)
-{
-    //unsigned A_tmp[32];
-    //int i;
-    //#pragma unroll
-    //for (i = 0; i < 32; ++i) A_tmp[i] = A[i * m];
-    //transpose32_optimized(A_tmp);
-    //#pragma unroll
-    //for (i = 0; i < 32; ++i) B[i*n] = A_tmp[i];
-
-    __shared__ uint32_t A_shared[32 * BLOCK_TRANSPOSE32];
-    uint32_t *A_tmp = &A_shared[32 * threadIdx.x];
-
-    int i;
-    #pragma unroll 32
-    for (i = 0; i < 32; ++i) A_tmp[i] = A[i * m];
-    transpose32_optimized(A_tmp);
-    #pragma unroll 32
-    for (i = 0; i < 32; ++i) B[i*n] = A_tmp[i];
-}
-
-
-// transpose 32x32 bit
-__global__ void transpose_bin_gpu_kernel_32(uint32_t *A, uint32_t *B, const int n, const int m,
-    const int lda, const int ldb, const int block_size)
-{
-    int i;
-    int index = (blockIdx.x*blockDim.x + threadIdx.x) * 32;
-
-    //for (i = 0; i < n; i += 8)
-    {
-        i = index % n;
-        int j;
-        //for (j = 0; j < m - 8; j += 8)
-        {
-            j = (index / n) * 32;
-            if (j < m) {
-                int a_index = i*lda + j;
-                int b_index = j*ldb + i;
-                transpose_32x32_bits_reversed_diagonale(&A[a_index / 32], &B[b_index / 32], lda / 32, ldb / 32);
+            else if (j < m) {
+                for (; j < m; ++j) {
+                    if (get_bit(A, i*lda + j)) set_bit(B, j*ldb + i);
+                    else remove_bit(B, j*ldb + i);
+                }
             }
         }
     }
 }
+
 
 void transpose_bin_gpu(unsigned char *A, unsigned char *B, const int n, const int m,
     const int lda, const int ldb, const int block_size)
 {
-    size_t size = n*m/ (8*8) + 1;
-    size_t size32 = n*m / (32*32) + 1;
+    size_t size = n*m/64 + 1;
     const int num_blocks = size / BLOCK + 1;
-    const int num_blocks32 = size32 / BLOCK_TRANSPOSE32 + 1;
-    transpose_bin_gpu_kernel_32 << <num_blocks32, BLOCK_TRANSPOSE32, 0, get_cuda_stream() >> >((uint32_t *)A, (uint32_t *)B, n, m, lda, ldb, block_size);
-    //transpose_bin_gpu_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(A, B, n, m, lda, ldb, block_size);
+    transpose_bin_gpu_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(A, B, n, m, lda, ldb, block_size);
 }
 // --------------------------------
-
-__global__ void transpose_uint32_kernel(uint32_t *src, uint32_t *dst, int src_h, int src_w, int src_align, int dst_align)
-{
-    //l.bit_align - algined (n) by 32
-    //new_ldb - aligned (k) by 256
-    int index = blockIdx.x*blockDim.x + threadIdx.x;
-
-    //for (i = 0; i < src_h; i += 1)
-    int i = index % src_h;  // l.size*l.size*l.c;
-    {
-        //for (j = 0; j < src_w; j += 1)
-        int j = index / src_h;  // out_h*out_w;
-        if(j < src_w)
-        {
-            ((uint32_t *)dst)[j*dst_align / 32 + i] = ((uint32_t *)src)[i*src_align + j];
-        }
-    }
-}
-
-void transpose_uint32_gpu(uint32_t *src, uint32_t *dst, int src_h, int src_w, int src_align, int dst_align)
-{
-    int size = src_w * src_h;
-    const int num_blocks = size / BLOCK + 1;
-    transpose_uint32_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(src, dst, src_h, src_w, src_align, dst_align);
-}
-// --------------------------------
-
-//#define TRANS_LOOP 10
-
-__global__ void transpose_uint32_kernel_2(uint32_t *src, uint32_t *dst, int src_h, int src_w, int src_align, int dst_align)
-{
-    __shared__ uint32_t tmp[33 * 32];   // misaligned_array[32x32]
-    const int w_align = 33;
-    //const int shared_size = w_align * 32;
-
-    //l.bit_align - algined (n) by 32
-    //new_ldb - aligned (k) by 256
-
-    const int src_w_align = src_w + (32 - src_w % 32);
-    const int src_h_align = src_h + (32 - src_h % 32);
-
-    const int warps_in_width = src_w_align / 32;
-    const int warps_in_height = src_h_align / 32;
-
-
-
-    const int local_x = threadIdx.x % 32;   // index % 32;
-    const int local_x_index = threadIdx.x / 32; // index / 32;
-    const int local_y = local_x_index % 32;
-
-//#pragma unroll TRANS_LOOP
-    //for (int i = 0; i < TRANS_LOOP; ++i)
-    {
-        const int global_index = blockIdx.x;// blockIdx.x*TRANS_LOOP + i;// local_x_index / 32;
-        const int global_x_index = global_index % warps_in_width;
-        const int global_y_index = global_index / warps_in_width;
-
-        const int global_x = global_x_index * 32 + local_x;
-        const int global_y = global_y_index * 32 + local_y;
-
-        uint32_t val = 0;
-        if (global_x < src_w && global_y < src_h) {
-            val = src[global_y * src_align + global_x];
-        }
-        //dst[global_x * dst_align / 32 + global_y] = val;
-        //tmp[local_y * 32 + local_x] = val;
-
-        tmp[local_x * w_align + local_y] = val;
-        __syncthreads();
-        val = tmp[local_y * w_align + local_x];
-
-        const int new_global_x = global_y_index * 32 + local_x;
-        const int new_global_y = global_x_index * 32 + local_y;
-
-        if (new_global_x < src_h && new_global_y < src_w) {
-            dst[new_global_y * (dst_align / 32) + new_global_x] = val;
-        }
-    }
-}
-
-#define TRANS_BLOCK 1024
-void transpose_uint32_gpu_2(uint32_t *src, uint32_t *dst, int src_h, int src_w, int src_align, int dst_align)
-{
-    int src_w_align = src_w + (32 - src_w % 32);
-    int src_h_align = src_h + (32 - src_h % 32);
-
-    int size = src_w_align * src_h_align;
-    int num_blocks = size / TRANS_BLOCK;
-    transpose_uint32_kernel_2 << <num_blocks, TRANS_BLOCK, 0, get_cuda_stream() >> >(src, dst, src_h, src_w, src_align, dst_align);
-}
-// --------------------------------
-
-
-// 32 channels -> 1 channel (with 32 floats)
-// 256 channels -> 8 channels (with 32 floats)
-__global__ void repack_input_kernel(float *input, float *re_packed_input, int w, int h, int c)
-{
-    int index = blockIdx.x*blockDim.x + threadIdx.x;
-
-    const int items_per_channel = w * h;
-
-    int c_pack = index % 32;
-    int chan_index = index / 32;
-    int chan = (chan_index * 32) % c;
-    int i = (chan_index * 32) / c;
-
-    //for (chan = 0; chan < c; chan += 32)
-    {
-        //for (i = 0; i < items_per_channel; ++i)
-        if(i < items_per_channel)
-        {
-            //for (c_pack = 0; c_pack < 32; ++c_pack)
-            {
-                float src = input[(chan + c_pack)*items_per_channel + i];
-
-                re_packed_input[chan*items_per_channel + i * 32 + c_pack] = src;
-            }
-        }
-    }
-}
-
-void repack_input_gpu(float *input, float *re_packed_input, int w, int h, int c)
-{
-    int size = w * h * c;
-    const int num_blocks = size / BLOCK + 1;
-    repack_input_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(input, re_packed_input, w, h, c);
-}
-// --------------------------------
-
-
-// 32 channels -> 1 channel (with 32 floats)
-// 256 channels -> 8 channels (with 32 floats)
-__global__ void repack_input_kernel_2(float *input, float *re_packed_input, int w, int h, int c)
-{
-    __shared__ uint32_t tmp[33 * 32];  // 33x32 is misaligned 32 x 32 to avoid bank conflicts
-
-    int index = blockIdx.x*blockDim.x + threadIdx.x;
-
-    const int items_per_channel = w * h;
-
-    int c_pack = index % 32;
-    int chan_index = index / 32;
-    int chan = (chan_index * 32) % c;
-    int i = (chan_index * 32) / c;
-
-    //for (chan = 0; chan < c; chan += 32)
-    {
-        //for (i = 0; i < items_per_channel; ++i)
-        if (i < items_per_channel)
-        {
-            //for (c_pack = 0; c_pack < 32; ++c_pack)
-            {
-                float src = input[(chan + c_pack)*items_per_channel + i];
-
-                re_packed_input[chan*items_per_channel + i * 32 + c_pack] = src;
-            }
-        }
-    }
-}
-
-void repack_input_gpu_2(float *input, float *re_packed_input, int w, int h, int c)
-{
-    int size = w * h * c;
-    const int num_blocks = size / BLOCK + 1;
-    repack_input_kernel_2 << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(input, re_packed_input, w, h, c);
-}
-// --------------------------------
-
-
-// 32 channels -> 1 channel (with 32 floats)
-// 256 channels -> 8 channels (with 32 floats)
-__global__ void repack_input_kernel_bin(float *input, uint32_t *re_packed_input_bin, int w, int h, int c)
-{
-    __shared__ uint32_t tmp[32];
-
-    int index = blockIdx.x*blockDim.x + threadIdx.x;
-
-    const int num_of_warps = blockDim.x / WARP_SIZE;
-    const int warp_id = threadIdx.x / WARP_SIZE;
-    const int lane_id = threadIdx.x % WARP_SIZE;
-
-    const int items_per_channel = w * h;
-
-    int c_pack = index % 32;
-    int chan_index = index / 32;
-    //int chan = (chan_index * 32) % c;
-    //int i = (chan_index * 32) / c;
-
-    int i = (chan_index) % items_per_channel;
-    int chan = ((chan_index ) / items_per_channel)*32;
-
-
-    //for (chan = 0; chan < c; chan += 32)
-    if(chan < c)
-    {
-        //for (i = 0; i < items_per_channel; ++i)
-        //if (i < items_per_channel)
-        {
-            //for (c_pack = 0; c_pack < 32; ++c_pack)
-            {
-                float src = input[(chan + c_pack)*items_per_channel + i];
-
-                uint32_t bit_mask = __ballot(src > 0);
-                //if (threadIdx.x % 32 == 0)
-                //    re_packed_input_bin[chan*items_per_channel/32 + i + c_pack/32] = bit_mask;
-
-                if (lane_id == 0) tmp[warp_id] = bit_mask;
-
-                __syncthreads();
-                if (warp_id == 0) {
-                    if (lane_id < num_of_warps) {
-                        re_packed_input_bin[chan*items_per_channel / 32 + i + lane_id] = tmp[lane_id];
-                    }
-                }
-                __syncthreads();
-            }
-        }
-    }
-}
-
-void repack_input_gpu_bin(float *input, uint32_t *re_packed_input_bin, int w, int h, int c)
-{
-    int size = w * h * c;
-    const int num_blocks = size / BLOCK + 1;
-    repack_input_kernel_bin << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(input, re_packed_input_bin, w, h, c);
-}
-// --------------------------------
-
 
 
 __global__ void fill_int8_gpu_kernel(unsigned char *src, unsigned char val, size_t size) {
@@ -1379,38 +1006,6 @@ __global__ void gemm_nn_custom_bin_mean_transposed_gpu_kernel(int M, int N, int 
         {
             int count = 0;
             k = 0;
-
-#ifdef NOT_USED
-            // 32 thread X 256 bit = 8192 bit
-            for (; k < (K - 8192); k += 8192) {   // l.size*l.size*l.c - one filter size [27 - 9216]
-                ulonglong4 c_bit256;
-
-                //int64_t A_cur_index = (i*lda + k) / 8;
-                int64_t A_cur_index = (local_i*lda + k) / 8;
-                int64_t B_cur_index = (j*ldb + k) / 8;
-                if (i >= M) A_cur_index = 0;
-
-                #pragma unroll
-                for (int t = 0; t < WARP_SIZE; ++t) {
-                    const int lane_id = threadIdx.x % WARP_SIZE;
-
-                    const int64_t A_i = __shfl(A_cur_index, t) + 32 * lane_id;
-                    const int64_t B_i = __shfl(B_cur_index, t) + 32 * lane_id;
-
-                    {
-                        //ulonglong4 a_bit256 = *((ulonglong4 *)(A + A_i));    // weights
-                        ulonglong4 a_bit256 = *((ulonglong4 *)(A_s + A_i));    // weights
-                        ulonglong4 b_bit256 = *((ulonglong4 *)(B + B_i));    // input
-                        c_bit256 = xnor_int256(a_bit256, b_bit256);
-                        int tmp_count = __popcll(c_bit256.w) + __popcll(c_bit256.x) +
-                                __popcll(c_bit256.y) + __popcll(c_bit256.z);
-
-                        int sum_count = warpAllReduceSum(tmp_count);
-                        if (lane_id == t) count += sum_count;
-                    }
-                }
-            }
-#endif
 
 //#ifdef NOT_USED
             // 32 thread X 64 bit = 2048 bit

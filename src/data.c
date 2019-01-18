@@ -142,7 +142,7 @@ box_label *read_boxes(char *filename, int *n)
     box_label *boxes = calloc(1, sizeof(box_label));
     FILE *file = fopen(filename, "r");
     if (!file) {
-        printf("Can't open label file. (This can be normal only if you use MSCOCO): %s \n", filename);
+        printf("Can't open label file. (This can be normal only if you use MSCOCO) \n");
         //file_error(filename);
         FILE* fw = fopen("bad.list", "a");
         fwrite(filename, sizeof(char), strlen(filename), fw);
@@ -336,8 +336,8 @@ void fill_truth_detection(char *path, int num_boxes, float *truth, int classes, 
         // if truth (box for object) is smaller than 1x1 pix
         char buff[256];
         if (id >= classes) {
-            printf("\n Wrong annotation: class_id = %d. But class_id should be [from 0 to %d] \n", id, (classes-1));
-            sprintf(buff, "echo %s \"Wrong annotation: class_id = %d. But class_id should be [from 0 to %d]\" >> bad_label.list", labelpath, id, (classes-1));
+            printf("\n Wrong annotation: class_id = %d. But class_id should be [from 0 to %d] \n", id, classes);
+            sprintf(buff, "echo %s \"Wrong annotation: class_id = %d. But class_id should be [from 0 to %d]\" >> bad_label.list", labelpath, id, classes);
             system(buff);
             getchar();
             ++sub;

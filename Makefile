@@ -7,7 +7,7 @@ OPENMP=0
 LIBSO=0
 
 # set GPU=1 and CUDNN=1 to speedup on GPU
-# set CUDNN_HALF=1 to further speedup 3 x times (Mixed-precision on Tensor Cores) GPU: Volta, Xavier, Turing and higher
+# set CUDNN_HALF=1 to further speedup 3 x times (Mixed-precision using Tensor Cores) on GPU Tesla V100, Titan V, DGX-2
 # set AVX=1 and OPENMP=1 to speedup on CPU (if error occurs then set AVX=0)
 
 DEBUG=0
@@ -22,12 +22,6 @@ OS := $(shell uname)
 
 # Tesla V100
 # ARCH= -gencode arch=compute_70,code=[sm_70,compute_70]
-
-# GeForce RTX 2080 Ti, RTX 2080, RTX 2070	Quadro RTX 8000, Quadro RTX 6000, Quadro RTX 5000	Tesla T4
-# ARCH= -gencode arch=compute_75,code=[sm_75,compute_75]
-
-# Jetson XAVIER
-# ARCH= -gencode arch=compute_72,code=[sm_72,compute_72]
 
 # GTX 1080, GTX 1070, GTX 1060, GTX 1050, GTX 1030, Titan Xp, Tesla P40, Tesla P4
 # ARCH= -gencode arch=compute_61,code=sm_61 -gencode arch=compute_61,code=compute_61
@@ -47,7 +41,7 @@ EXEC=darknet
 OBJDIR=./obj/
 
 ifeq ($(LIBSO), 1)
-LIBNAMESO=libdarknet.so
+LIBNAMESO=darknet.so
 APPNAMESO=uselib
 endif
 
@@ -56,7 +50,7 @@ CPP=g++
 NVCC=nvcc 
 OPTS=-Ofast
 LDFLAGS= -lm -pthread 
-COMMON= -Iinclude/ 
+COMMON= 
 CFLAGS=-Wall -Wfatal-errors -Wno-unused-result -Wno-unknown-pragmas
 
 ifeq ($(DEBUG), 1) 
@@ -115,17 +109,17 @@ OBJ+=convolutional_kernels.o activation_kernels.o im2col_kernels.o col2im_kernel
 endif
 
 OBJS = $(addprefix $(OBJDIR), $(OBJ))
-DEPS = $(wildcard src/*.h) Makefile include/darknet.h
+DEPS = $(wildcard src/*.h) Makefile
 
-all: obj backup results setchmod $(EXEC) $(LIBNAMESO) $(APPNAMESO)
+all: obj backup results $(EXEC) $(LIBNAMESO) $(APPNAMESO)
 
 ifeq ($(LIBSO), 1) 
 CFLAGS+= -fPIC
 
-$(LIBNAMESO): $(OBJS) include/yolo_v2_class.hpp src/yolo_v2_class.cpp
-	$(CPP) -shared -std=c++11 -fvisibility=hidden -DLIB_EXPORTS $(COMMON) $(CFLAGS) $(OBJS) src/yolo_v2_class.cpp -o $@ $(LDFLAGS)
+$(LIBNAMESO): $(OBJS) src/yolo_v2_class.hpp src/yolo_v2_class.cpp
+	$(CPP) -shared -std=c++11 -fvisibility=hidden -DYOLODLL_EXPORTS $(COMMON) $(CFLAGS) $(OBJS) src/yolo_v2_class.cpp -o $@ $(LDFLAGS)
 	
-$(APPNAMESO): $(LIBNAMESO) include/yolo_v2_class.hpp src/yolo_console_dll.cpp
+$(APPNAMESO): $(LIBNAMESO) src/yolo_v2_class.hpp src/yolo_console_dll.cpp
 	$(CPP) -std=c++11 $(COMMON) $(CFLAGS) -o $@ src/yolo_console_dll.cpp $(LDFLAGS) -L ./ -l:$(LIBNAMESO)
 endif
 
@@ -147,8 +141,6 @@ backup:
 	mkdir -p backup
 results:
 	mkdir -p results
-setchmod:
-	chmod +x *.sh
 
 .PHONY: clean
 

@@ -1,9 +1,22 @@
 #ifndef CUDA_H
 #define CUDA_H
-#include "darknet.h"
 
 #if defined(_MSC_VER) && _MSC_VER < 1900
 	#define inline __inline
+#endif
+
+#ifdef YOLODLL_EXPORTS
+#if defined(_MSC_VER)
+#define YOLODLL_API __declspec(dllexport) 
+#else
+#define YOLODLL_API __attribute__((visibility("default")))
+#endif
+#else
+#if defined(_MSC_VER)
+#define YOLODLL_API
+#else
+#define YOLODLL_API
+#endif
 #endif
 
 extern int gpu_index;
@@ -27,10 +40,9 @@ extern "C" {
     cublasHandle_t blas_handle();
     float *cuda_make_array(float *x, size_t n);
     int *cuda_make_int_array(size_t n);
-	int *cuda_make_int_array_new_api(int *x, size_t n);
     void cuda_push_array(float *x_gpu, float *x, size_t n);
-    //LIB_API void cuda_pull_array(float *x_gpu, float *x, size_t n);
-    //LIB_API void cuda_set_device(int n);
+    YOLODLL_API void cuda_pull_array(float *x_gpu, float *x, size_t n);
+    YOLODLL_API void cuda_set_device(int n);
     int cuda_get_device();
     void cuda_free(float *x_gpu);
     void cuda_random(float *x_gpu, size_t n);
@@ -47,6 +59,6 @@ enum {cudnn_fastest, cudnn_smallest};
 #endif
 
 #else // GPU
-//LIB_API void cuda_set_device(int n);
+YOLODLL_API void cuda_set_device(int n);
 #endif // GPU
 #endif // CUDA_H

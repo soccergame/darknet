@@ -307,84 +307,6 @@ void gemm_nn_custom_bin_mean_transposed(int M, int N, int K, float ALPHA_UNUSED,
 
 //----------------------------
 
-// is not used
-void transpose_32x32_bits_my(uint32_t *A, uint32_t *B, int lda, int ldb)
-{
-    unsigned x, y, t;
-    for (y = 0; y < 32; ++y) {
-        for (x = 0; x < 32; ++x) {
-            if (A[y * lda] & (1 << x)) B[x * ldb] |= (uint32_t)1 << y;
-        }
-    }
-}
-
-uint8_t reverse_8_bit(uint8_t a) {
-    return ((a * 0x0802LU & 0x22110LU) | (a * 0x8020LU & 0x88440LU)) * 0x10101LU >> 16;
-}
-
-uint32_t reverse_32_bit(uint32_t a)
-{
-    // unsigned int __rbit(unsigned int val) // for ARM    //__asm__("rbit %0, %1\n" : "=r"(output) : "r"(input));
-    return (reverse_8_bit(a >> 24) << 0) |
-        (reverse_8_bit(a >> 16) << 8) |
-        (reverse_8_bit(a >> 8) << 16) |
-        (reverse_8_bit(a >> 0) << 24);
-}
-
-#define swap(a0, a1, j, m) t = (a0 ^ (a1 >>j)) & m; a0 = a0 ^ t; a1 = a1 ^ (t << j);
-
-void transpose32_optimized(uint32_t A[32]) {
-    int j, k;
-    unsigned m, t;
-
-    //m = 0x0000FFFF;
-    //for (j = 16; j != 0; j = j >> 1, m = m ^ (m << j)) {
-    //    for (k = 0; k < 32; k = (k + j + 1) & ~j) {
-    //        t = (A[k] ^ (A[k + j] >> j)) & m;
-    //        A[k] = A[k] ^ t;
-    //        A[k + j] = A[k + j] ^ (t << j);
-    //    }
-    //}
-
-    j = 16;
-    m = 0x0000FFFF;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 8;
-    m = 0x00ff00ff;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 4;
-    m = 0x0f0f0f0f;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 2;
-    m = 0x33333333;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    j = 1;
-    m = 0x55555555;
-    for (k = 0; k < 32; k = (k + j + 1) & ~j) { swap(A[k], A[k + j], j, m); }
-
-    // reverse Y
-    for (j = 0; j < 16; ++j) {
-        uint32_t tmp = A[j];
-        A[j] = reverse_32_bit(A[31 - j]);
-        A[31 - j] = reverse_32_bit(tmp);
-    }
-}
-
-void transpose_32x32_bits_reversed_diagonale(uint32_t *A, uint32_t *B, int m, int n)
-{
-    unsigned A_tmp[32];
-    int i;
-    #pragma unroll
-    for (i = 0; i < 32; ++i) A_tmp[i] = A[i * m];
-    transpose32_optimized(A_tmp);
-    #pragma unroll
-    for (i = 0; i < 32; ++i) B[i*n] = A_tmp[i];
-}
-
 
 void transpose_8x8_bits_my(unsigned char *A, unsigned char *B, int lda, int ldb)
 {
@@ -419,14 +341,13 @@ unsigned char reverse_byte_3(unsigned char n) {
 }
 
 
-void transpose8rS32_reversed_diagonale(unsigned char* A, unsigned char* B, int m, int n)
+void transpose8rS32_reversed_diagonale(unsigned char* A, int m, int n, unsigned char* B)
 {
     unsigned x, y, t;
 
-    x = y = 0;
     // Load the array and pack it into x and y.
-    //x = (A[0] << 24) | (A[m] << 16) | (A[2 * m] << 8) | A[3 * m];
-    //y = (A[4 * m] << 24) | (A[5 * m] << 16) | (A[6 * m] << 8) | A[7 * m];
+    x = (A[0] << 24) | (A[m] << 16) | (A[2 * m] << 8) | A[3 * m];
+    y = (A[4 * m] << 24) | (A[5 * m] << 16) | (A[6 * m] << 8) | A[7 * m];
 
     t = (x ^ (x >> 7)) & 0x00AA00AA;  x = x ^ t ^ (t << 7);
     t = (y ^ (y >> 7)) & 0x00AA00AA;  y = y ^ t ^ (t << 7);
@@ -442,45 +363,18 @@ void transpose8rS32_reversed_diagonale(unsigned char* A, unsigned char* B, int m
     B[3 * n] = reverse_byte(y >> 24);  B[2 * n] = reverse_byte(y >> 16);  B[1 * n] = reverse_byte(y >> 8);  B[0 * n] = reverse_byte(y);
 }
 
-/*
-// transpose by 8-bit
 void transpose_bin(char *A, char *B, const int n, const int m,
     const int lda, const int ldb, const int block_size)
 {
-    //printf("\n n = %d, ldb = %d \t\t m = %d, lda = %d \n", n, ldb, m, lda);
     int i;
     #pragma omp parallel for
     for (i = 0; i < n; i += 8) {
         int j;
-        for (j = 0; j < m; j += 8) {
+        for (j = 0; j < m - 8; j += 8) {
             int a_index = i*lda + j;
             int b_index = j*ldb + i;
             //transpose_8x8_bits_my(&A[a_index/8], &B[b_index/8], lda/8, ldb/8);
-            transpose8rS32_reversed_diagonale(&A[a_index / 8], &B[b_index / 8], lda / 8, ldb / 8);
-        }
-        for (; j < m; ++j) {
-            if (get_bit(A, i*lda + j)) set_bit(B, j*ldb + i);
-        }
-    }
-}
-*/
-
-
-// transpose by 32-bit
-void transpose_bin(uint32_t *A, uint32_t *B, const int n, const int m,
-    const int lda, const int ldb, const int block_size)
-{
-    //printf("\n n = %d (n mod 32 = %d), m = %d (m mod 32 = %d) \n", n, n % 32, m, m % 32);
-    //printf("\n lda = %d (lda mod 32 = %d), ldb = %d (ldb mod 32 = %d) \n", lda, lda % 32, ldb, ldb % 32);
-    int i;
-    #pragma omp parallel for
-    for (i = 0; i < n; i += 32) {
-        int j;
-        for (j = 0; j < m; j += 32) {
-            int a_index = i*lda + j;
-            int b_index = j*ldb + i;
-            transpose_32x32_bits_reversed_diagonale(&A[a_index / 32], &B[b_index / 32], lda / 32, ldb / 32);
-            //transpose_32x32_bits_my(&A[a_index/32], &B[b_index/32], lda/32, ldb/32);
+            transpose8rS32_reversed_diagonale(&A[a_index / 8], lda / 8, ldb / 8, &B[b_index / 8]);
         }
         for (; j < m; ++j) {
             if (get_bit(A, i*lda + j)) set_bit(B, j*ldb + i);
@@ -488,14 +382,6 @@ void transpose_bin(uint32_t *A, uint32_t *B, const int n, const int m,
     }
 }
 
-static inline int popcnt_32(uint32_t val32) {
-#ifdef WIN32  // Windows MSVS
-    int tmp_count = __popcnt(val32);
-#else   // Linux GCC
-    int tmp_count = __builtin_popcount(val32);
-#endif
-    return tmp_count;
-}
 //----------------------------
 
 
@@ -729,68 +615,6 @@ void gemm_nn(int M, int N, int K, float ALPHA,
     }
 }
 
-
-
-
-void gemm_nn_bin_32bit_packed(int M, int N, int K, float ALPHA,
-    uint32_t *A, int lda,
-    uint32_t *B, int ldb,
-    float *C, int ldc, float *mean_arr)
-{
-    int i;
-    #pragma omp parallel for
-    for (i = 0; i < M; ++i) {   // l.n
-        int j, s;
-        float mean_val = mean_arr[i];
-        //printf(" l.mean_arr[i] = %d \n ", l.mean_arr[i]);
-        for (s = 0; s < K; ++s) // l.size*l.size*l.c/32  or (l.size*l.size*l.c)
-        {
-            register uint32_t A_PART = A[i*lda + s];
-            __m256i a256 = _mm256_set1_epi32(A_PART);
-
-            for (j = 0; j < N - 8; j += 8)
-            {
-                __m256i b256 = *((__m256i*)&B[s*ldb + j]);
-                __m256i xor256 = _mm256_xor_si256(a256, b256);  // xnor = xor(a,b)
-                __m256i all_1 = _mm256_set1_epi8(255);
-                __m256i xnor256 = _mm256_andnot_si256(xor256, all_1); // xnor = not(xor(a,b))
-
-                // waiting for - CPUID Flags: AVX512VPOPCNTDQ: __m512i _mm512_popcnt_epi32(__m512i a)
-                __m256 count = _mm256_setr_ps(
-                    popcnt_32(_mm256_extract_epi32(xnor256, 0)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 1)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 2)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 3)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 4)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 5)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 6)),
-                    popcnt_32(_mm256_extract_epi32(xnor256, 7)));
-
-                __m256 val2 = _mm256_set1_ps(2);
-                count = _mm256_mul_ps(count, val2);     // count * 2
-
-                __m256 val32 = _mm256_set1_ps(32);
-                count = _mm256_sub_ps(count, val32);    // count - 32
-
-                __m256 mean256 = _mm256_set1_ps(mean_val);
-                count = _mm256_mul_ps(count, mean256);  // count * mean_val
-
-                __m256 c256 = *((__m256*)&C[i*ldc + j]);
-                count = _mm256_add_ps(count, c256);     // c = c + count
-                *((__m256*)&C[i*ldc + j]) = count;
-            }
-
-            for (; j < N; ++j) // out_h*out_w;
-            {
-                register uint32_t B_PART = B[s*ldb + j];
-                uint32_t xnor_result = ~(A_PART ^ B_PART);
-                int32_t count = popcnt_32(xnor_result);  // must be Signed int
-
-                C[i*ldc + j] += (2 * count - 32) * mean_val;
-            }
-        }
-    }
-}
 
 void convolution_2d_old(int w, int h, int ksize, int n, int c, int pad, int stride,
     float *weights, float *input, float *output)
@@ -1723,15 +1547,7 @@ void forward_maxpool_layer_avx(float *src, float *dst, int *indexes, int size, i
     }
 }
 
-#else   // AVX
-
-int is_avx() {
-    return 0;
-}
-
-int is_fma_avx2() {
-    return 0;
-}
+#else
 
 void gemm_nn(int M, int N, int K, float ALPHA,
     float *A, int lda,
@@ -1744,36 +1560,6 @@ void gemm_nn(int M, int N, int K, float ALPHA,
             register float A_PART = ALPHA*A[i*lda + k];
             for (j = 0; j < N; ++j) {
                 C[i*ldc + j] += A_PART*B[k*ldb + j];
-            }
-        }
-    }
-}
-
-void gemm_nn_bin_32bit_packed(int M, int N, int K, float ALPHA,
-    uint32_t *A, int lda,
-    uint32_t *B, int ldb,
-    float *C, int ldc, float *mean_arr)
-{
-    int i;
-    #pragma omp parallel for
-    for (i = 0; i < M; ++i) {   // l.n
-        int j, s;
-        float mean_val = mean_arr[i];
-        //printf(" l.mean_arr[i] = %d \n ", l.mean_arr[i]);
-        for (s = 0; s < K; ++s) // l.size*l.size*l.c/32  or (l.size*l.size*l.c)
-        {
-            //register float A_PART = 1*a[i*k + s];
-            register uint32_t A_PART = A[i*lda + s];
-            for (j = 0; j < N; ++j) // out_h*out_w;
-            {
-                //c[i*n + j] += A_PART*b[s*n + j];
-                register uint32_t B_PART = B[s*ldb + j];
-                uint32_t xnor_result = ~(A_PART ^ B_PART);
-                //printf(" xnor_result = %d, ", xnor_result);
-                int32_t count = popcnt_32(xnor_result);  // must be Signed int
-
-                C[i*ldc + j] += (2 * count - 32) * mean_val;
-                //c[i*n + j] += count*mean;
             }
         }
     }
@@ -1828,25 +1614,6 @@ void convolution_2d(int w, int h, int ksize, int n, int c, int pad, int stride,
     }
 }
 
-static inline int popcnt_64(uint64_t val64) {
-#ifdef WIN32  // Windows
-#ifdef _WIN64 // Windows 64-bit
-    int tmp_count = __popcnt64(val64);
-#else         // Windows 32-bit
-    int tmp_count = __popcnt(val64);
-    tmp_count += __popcnt(val64 >> 32);
-#endif
-#else   // Linux
-#ifdef __x86_64__  // Linux 64-bit
-    int tmp_count = __builtin_popcountll(val64);
-#else  // Linux 32-bit
-    int tmp_count = __builtin_popcount(val64);
-    tmp_count += __builtin_popcount(val64);
-#endif
-#endif
-    return tmp_count;
-}
-
 void gemm_nn_custom_bin_mean_transposed(int M, int N, int K, float ALPHA_UNUSED,
     unsigned char *A, int lda,
     unsigned char *B, int ldb,
@@ -1867,7 +1634,11 @@ void gemm_nn_custom_bin_mean_transposed(int M, int N, int K, float ALPHA_UNUSED,
                 uint64_t b_bit64 = *((uint64_t *)(B + (j*ldb + k) / 8));
                 uint64_t c_bit64 = xnor_int64(a_bit64, b_bit64);
 
-                int tmp_count = popcnt_64(c_bit64);
+#ifdef WIN32
+                int tmp_count = __popcnt64(c_bit64);
+#else
+                int tmp_count = __builtin_popcountll(c_bit64);
+#endif
 
                 if (K - k < 64)  tmp_count = tmp_count - (64 - (K - k));    // remove extra bits
                 count += tmp_count;
@@ -2211,137 +1982,6 @@ void forward_maxpool_layer_avx(float *src, float *dst, int *indexes, int size, i
 
 #endif    // AVX
 
-
-// 32 channels -> 1 channel (with 32 floats)
-// 256 channels -> 8 channels (with 32 floats)
-void repack_input(float *input, float *re_packed_input, int w, int h, int c)
-{
-    const int items_per_channel = w * h;
-    int chan, i;
-    for (chan = 0; chan < c; chan += 32)
-    {
-        for (i = 0; i < items_per_channel; ++i)
-        {
-            int c_pack;
-            for (c_pack = 0; c_pack < 32; ++c_pack) {
-                float src = input[(chan + c_pack)*items_per_channel + i];
-
-                re_packed_input[chan*items_per_channel + i * 32 + c_pack] = src;
-            }
-        }
-    }
-}
-
-void transpose_uint32(uint32_t *src, uint32_t *dst, int src_h, int src_w, int src_align, int dst_align)
-{
-    //l.bit_align - algined (n) by 32
-    //new_ldb - aligned (k) by 256
-
-    int i;
-    //#pragma omp parallel for
-    for (i = 0; i < src_h; i += 1)  // l.size*l.size*l.c;
-    {
-        int j;
-        for (j = 0; j < src_w; j += 1)  // out_h*out_w;
-        {
-            ((uint32_t *)dst)[j*dst_align / 32 + i] = ((uint32_t *)src)[i*src_align + j];
-        }
-    }
-}
-
-void gemm_nn_bin_transposed_32bit_packed(int M, int N, int K, float ALPHA,
-    uint32_t *A, int lda,
-    uint32_t *B, int ldb,
-    float *C, int ldc, float *mean_arr)
-{
-    int i;
-    #pragma omp parallel for
-    for (i = 0; i < M; ++i) {   // l.n
-        int j, s;
-        float mean_val = mean_arr[i];
-        for (j = 0; j < N; ++j) // out_h*out_w;
-        {
-            float val = 0;
-            for (s = 0; s < K; ++s) // l.size*l.size*l.c/32  or (l.size*l.size*l.c)
-            {
-                register uint32_t A_PART = ((uint32_t*)A)[i*lda + s];
-                register uint32_t B_PART = ((uint32_t*)B)[j*ldb + s];
-                uint32_t xnor_result = ~(A_PART ^ B_PART);
-                int32_t count = popcnt_32(xnor_result);  // must be Signed int
-
-                val += (2 * count - 32) * mean_val;
-            }
-            C[i*ldc + j] += val;
-        }
-    }
-}
-
-void convolution_repacked(uint32_t *packed_input, uint32_t *packed_weights, float *output,
-    int w, int h, int c, int n, int size, int pad, int new_lda, float *mean_arr)
-{
-    int fil;
-    // filter index
-    #pragma omp parallel for
-    for (fil = 0; fil < n; ++fil) {
-        float mean_val = mean_arr[fil];
-        int chan, c_pack, y, x, f_y, f_x;
-        // channel index
-        for (chan = 0; chan < c / 32; ++chan)
-            //for (chan = 0; chan < l.c; chan += 32)
-            //for (c_pack = 0; c_pack < 32; ++c_pack)
-            // input - y
-            for (y = 0; y < h; ++y)
-                // input - x
-                for (x = 0; x < w; ++x)
-                {
-                    int const output_index = fil*w*h + y*w + x;
-                    float sum = 0;
-
-                    // filter - y
-                    for (f_y = 0; f_y < size; ++f_y)
-                    {
-                        int input_y = y + f_y - pad;
-                        // filter - x
-                        for (f_x = 0; f_x < size; ++f_x)
-                        {
-                            int input_x = x + f_x - pad;
-                            if (input_y < 0 || input_x < 0 || input_y >= h || input_x >= w) continue;
-
-                            // normal
-                            //float input = state.input[(chan + c_pack)*l.w*l.h + input_y*l.w + input_x];
-                            //float weight = l.weights[fil*l.c*l.size*l.size + (chan + c_pack)*l.size*l.size + f_y*l.size + f_x];
-
-                            // packed
-                            //float input = re_packed_input[chan*l.w*l.h + (input_y*l.w + input_x) * 32 + c_pack];
-                            //float weight = l.weights[fil*l.c*l.size*l.size + chan*l.size*l.size + (f_y*l.size + f_x) * 32 + c_pack];
-                            //sum += input * weight;
-
-                            //float input = re_packed_input[chan*l.w*l.h + (input_y*l.w + input_x) * 32 + c_pack];
-                            //float weight = l.weights[fil*l.c*l.size*l.size + chan*l.size*l.size + (f_y*l.size + f_x) * 32 + c_pack];
-                            //uint32_t bit1 = input > 0;
-                            //uint32_t bit2 = weight > 0;
-                            //uint32_t count = (~(bit1 ^ bit2)) & 1;
-                            //float result = (2 * (float)count - 1) * mean_val;
-                            //printf("\n mul = %f, bit1 = %d, bit2 = %d, count = %d, mean = %f, result = %f  ", input*weight, bit1, bit2, count, mean_val, result);
-                            //sum += result;
-
-                            uint32_t input = ((uint32_t *)packed_input)[chan*w*h + input_y*w + input_x];
-                            //uint32_t weight = ((uint32_t *)l.align_bit_weights)[fil*l.c*l.size*l.size/32 + chan*l.size*l.size + f_y*l.size + f_x];
-                            uint32_t weight = ((uint32_t *)packed_weights)[fil*new_lda / 32 + chan*size*size + f_y*size + f_x];
-
-                            uint32_t xnor_result = ~(input ^ weight);
-                            int32_t count = popcnt_32(xnor_result); // mandatory Signed int
-                            sum += (2 * count - 32) * mean_val;
-                        }
-                    }
-                    // l.output[filters][width][height] +=
-                    //        state.input[channels][width][height] *
-                    //        l.weights[filters][channels][filter_width][filter_height];
-                    output[output_index] += sum;
-                }
-    }
-}
-
 void gemm_nt(int M, int N, int K, float ALPHA,
         float *A, int lda,
         float *B, int ldb,
@@ -2409,8 +2049,6 @@ void gemm_cpu(int TA, int TB, int M, int N, int K, float ALPHA,
         }
     }
 
-    is_avx();   // initialize static variable
-    is_fma_avx2();
     int t;
     #pragma omp parallel for
     for (t = 0; t < M; ++t) {

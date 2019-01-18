@@ -7,7 +7,6 @@ extern "C" {
 #include "blas.h"
 #include "cuda.h"
 #include "utils.h"
-#include "tree.h"
 }
 
 __global__ void scale_bias_kernel(float *output, float *biases, int n, int size)
@@ -99,7 +98,7 @@ __global__ void dot_kernel(float *output, float scale, int batch, int n, int siz
     int f1 = index / n;
     int f2 = index % n;
     if (f2 <= f1) return;
-
+    
     float sum = 0;
     float norm1 = 0;
     float norm2 = 0;
@@ -140,20 +139,19 @@ void backward_bias_gpu(float *bias_updates, float *delta, int batch, int n, int 
     check_error(cudaPeekAtLastError());
 }
 
+
 __global__ void adam_kernel(int N, float *x, float *m, float *v, float B1, float B2, float rate, float eps, int t)
 {
     int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if (index >= N) return;
-
-    float mhat = m[index] / (1.f - powf(B1, t));
-    float vhat = v[index] / (1.f - powf(B2, t));
-
-    x[index] = x[index] + rate * mhat / (sqrtf(vhat) + eps);
+    
+    x[index] = x[index] - (rate * sqrtf(1.F-powf(B2, t)) / (1.F-powf(B1, t)) * m[index] / (sqrtf(v[index]) + eps));
+    //if(index == 0) printf("%f %f %f %f\n", m[index], v[index], (rate * sqrtf(1.F-powf(B2, t)) / (1.F-powf(B1, t)) * m[index] / (sqrt(v[index]) + eps)));
 }
 
 extern "C" void adam_gpu(int n, float *x, float *m, float *v, float B1, float B2, float rate, float eps, int t)
 {
-    adam_kernel << <cuda_gridsize(n), BLOCK >> >(n, x, m, v, B1, B2, rate, eps, t);
+    adam_kernel<<<cuda_gridsize(n), BLOCK>>>(n, x, m, v, B1, B2, rate, eps, t);
     check_error(cudaPeekAtLastError());
 }
 
@@ -176,7 +174,7 @@ __global__ void normalize_kernel(int N, float *x, float *mean, float *variance, 
     int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if (index >= N) return;
     int f = (index/spatial)%filters;
-
+    
     x[index] = (x[index] - mean[f])/(sqrtf(variance[f]) + .000001f);
 }
 
@@ -185,7 +183,7 @@ __global__ void normalize_delta_kernel(int N, float *x, float *mean, float *vari
     int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if (index >= N) return;
     int f = (index/spatial)%filters;
-
+    
     delta[index] = delta[index] * 1.F/(sqrtf(variance[f]) + .000001f) + variance_delta[f] * 2. * (x[index] - mean[f]) / (spatial * batch) + mean_delta[f]/(spatial*batch);
 }
 
@@ -421,13 +419,7 @@ __global__ void fill_kernel(int N, float ALPHA, float *X, int INCX)
     if(i < N) X[i*INCX] = ALPHA;
 }
 
-__global__ void mask_kernel_new_api(int n, float *x, float mask_num, float *mask, float val)
-{
-	int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-	if (i < n && mask[i] == mask_num) x[i] = val;
-}
-
-__global__ void mask_kernel(int n, float *x, float mask_num, float *mask)
+__global__ void mask_kernel(int n,  float *x, float mask_num, float *mask)
 {
     int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if(i < n && mask[i] == mask_num) x[i] = mask_num;
@@ -437,13 +429,6 @@ __global__ void copy_kernel(int N,  float *X, int OFFX, int INCX, float *Y, int 
 {
     int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if(i < N) Y[i*INCY + OFFY] = X[i*INCX + OFFX];
-}
-
-__global__ void simple_copy_kernel(int size, float *src, float *dst)
-{
-    int index = blockIdx.x*blockDim.x + threadIdx.x;
-    if (index < size)
-        dst[index] = src[index];
 }
 
 __global__ void mul_kernel(int N, float *X, int INCX, float *Y, int INCY)
@@ -564,13 +549,6 @@ extern "C" void copy_ongpu(int N, float * X, int INCX, float * Y, int INCY)
     copy_ongpu_offset(N, X, 0, INCX, Y, 0, INCY);
 }
 
-extern "C" void simple_copy_ongpu(int size, float *src, float *dst)
-{
-    const int num_blocks = size / BLOCK + 1;
-    simple_copy_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(size, src, dst);
-    check_error(cudaPeekAtLastError());
-}
-
 extern "C" void mul_ongpu(int N, float * X, int INCX, float * Y, int INCY)
 {
     mul_kernel<<<cuda_gridsize(N), BLOCK>>>(N, X, INCX, Y, INCY);
@@ -612,12 +590,6 @@ extern "C" void reorg_ongpu(float *x, int w, int h, int c, int batch, int stride
     int size = w*h*c*batch;
     reorg_kernel<<<cuda_gridsize(size), BLOCK, 0, get_cuda_stream()>>>(size, x, w, h, c, batch, stride, forward, out);
     check_error(cudaPeekAtLastError());
-}
-
-extern "C" void mask_gpu_new_api(int N, float * X, float mask_num, float * mask, float val)
-{
-	mask_kernel_new_api <<<cuda_gridsize(N), BLOCK >>>(N, X, mask_num, mask, val);
-	check_error(cudaPeekAtLastError());
 }
 
 extern "C" void mask_ongpu(int N, float * X, float mask_num, float * mask)
@@ -692,41 +664,6 @@ extern "C" void shortcut_gpu(int batch, int w1, int h1, int c1, float *add, int 
     check_error(cudaPeekAtLastError());
 }
 
-__global__ void input_shortcut_kernel(float *in, int size, int minw, int minh, int minc, int stride, int sample, int batch, int w1, int h1, int c1, float *add, int w2, int h2, int c2, float *out)
-{
-    int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-    if (id >= size) return;
-    int i = id % minw;
-    id /= minw;
-    int j = id % minh;
-    id /= minh;
-    int k = id % minc;
-    id /= minc;
-    int b = id % batch;
-
-    int out_index = i*sample + w2*(j*sample + h2*(k + c2*b));
-    int add_index = i*stride + w1*(j*stride + h1*(k + c1*b));
-    out[out_index] = in[out_index] + add[add_index];
-}
-
-extern "C" void input_shortcut_gpu(float *in, int batch, int w1, int h1, int c1, float *add, int w2, int h2, int c2, float *out)
-{
-    int minw = (w1 < w2) ? w1 : w2;
-    int minh = (h1 < h2) ? h1 : h2;
-    int minc = (c1 < c2) ? c1 : c2;
-
-    int stride = w1 / w2;
-    int sample = w2 / w1;
-    assert(stride == h1 / h2);
-    assert(sample == h2 / h1);
-    if (stride < 1) stride = 1;
-    if (sample < 1) sample = 1;
-
-    int size = batch * minw * minh * minc;
-    input_shortcut_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> >(in, size, minw, minh, minc, stride, sample, batch, w1, h1, c1, add, w2, h2, c2, out);
-    check_error(cudaPeekAtLastError());
-}
-
 __global__ void smooth_l1_kernel(int n, float *pred, float *truth, float *delta, float *error)
 {
     int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
@@ -748,23 +685,6 @@ extern "C" void smooth_l1_gpu(int n, float *pred, float *truth, float *delta, fl
 {
     smooth_l1_kernel<<<cuda_gridsize(n), BLOCK>>>(n, pred, truth, delta, error);
     check_error(cudaPeekAtLastError());
-}
-
-__global__ void softmax_x_ent_kernel(int n, float *pred, float *truth, float *delta, float *error)
-{
-	int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-	if (i < n) {
-		float t = truth[i];
-		float p = pred[i];
-		error[i] = (t) ? -log(p) : 0;
-		delta[i] = t - p;
-	}
-}
-
-extern "C" void softmax_x_ent_gpu(int n, float *pred, float *truth, float *delta, float *error)
-{
-	softmax_x_ent_kernel << <cuda_gridsize(n), BLOCK >> >(n, pred, truth, delta, error);
-	check_error(cudaPeekAtLastError());
 }
 
 __global__ void l2_kernel(int n, float *pred, float *truth, float *delta, float *error)
@@ -864,40 +784,6 @@ extern "C" void softmax_gpu(float *input, int n, int offset, int groups, float t
     check_error(cudaPeekAtLastError());
 }
 
-__device__ void softmax_device_new_api(float *input, int n, float temp, int stride, float *output)
-{
-	int i;
-	float sum = 0;
-	float largest = -INFINITY;
-	for (i = 0; i < n; ++i) {
-		int val = input[i*stride];
-		largest = (val>largest) ? val : largest;
-	}
-	for (i = 0; i < n; ++i) {
-		float e = expf(input[i*stride] / temp - largest / temp);
-		sum += e;
-		output[i*stride] = e;
-	}
-	for (i = 0; i < n; ++i) {
-		output[i*stride] /= sum;
-	}
-}
-
-__global__ void softmax_kernel_new_api(float *input, int n, int batch, int batch_offset, int groups, int group_offset, int stride, float temp, float *output)
-{
-	int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-	if (id >= batch*groups) return;
-	int b = id / groups;
-	int g = id % groups;
-	softmax_device_new_api(input + b*batch_offset + g*group_offset, n, temp, stride, output + b*batch_offset + g*group_offset);
-}
-
-extern "C" void softmax_gpu_new_api(float *input, int n, int batch, int batch_offset, int groups, int group_offset, int stride, float temp, float *output)
-{
-	softmax_kernel_new_api << <cuda_gridsize(batch*groups), BLOCK >> >(input, n, batch, batch_offset, groups, group_offset, stride, temp, output);
-	check_error(cudaPeekAtLastError());
-}
-
 
 __global__ void upsample_kernel(size_t N, float *x, int w, int h, int c, int batch, int stride, int forward, float scale, float *out)
 {
@@ -926,38 +812,6 @@ __global__ void upsample_kernel(size_t N, float *x, int w, int h, int c, int bat
 extern "C" void upsample_gpu(float *in, int w, int h, int c, int batch, int stride, int forward, float scale, float *out)
 {
     size_t size = w*h*c*batch*stride*stride;
-    upsample_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> >(size, in, w, h, c, batch, stride, forward, scale, out);
+    upsample_kernel << <cuda_gridsize(size), BLOCK >> >(size, in, w, h, c, batch, stride, forward, scale, out);
     check_error(cudaPeekAtLastError());
-}
-
-__global__ void softmax_tree_kernel(float *input, int spatial, int batch, int stride, float temp, float *output, int groups, int *group_size, int *group_offset)
-{
-	int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-	if (id >= spatial*batch*groups) return;
-	int s = id % spatial;
-	id = id / spatial;
-	int g = id % groups;
-	int b = id / groups;
-	int goff = group_offset[g] * spatial;
-	int boff = b*stride;
-	softmax_device_new_api(input + goff + boff + s, group_size[g], temp, spatial, output + goff + boff + s);
-}
-
-extern "C" void softmax_tree_gpu(float *input, int spatial, int batch, int stride, float temp, float *output, tree hier)
-{
-	int *tree_groups_size = cuda_make_int_array_new_api(hier.group_size, hier.groups);
-	int *tree_groups_offset = cuda_make_int_array_new_api(hier.group_offset, hier.groups);
-	/*
-	static int *tree_groups_size = 0;
-	static int *tree_groups_offset = 0;
-	if(!tree_groups_size){
-	tree_groups_size = cuda_make_int_array(hier.group_size, hier.groups);
-	tree_groups_offset = cuda_make_int_array(hier.group_offset, hier.groups);
-	}
-	*/
-	int num = spatial*batch*hier.groups;
-	softmax_tree_kernel <<<cuda_gridsize(num), BLOCK >>>(input, spatial, batch, stride, temp, output, hier.groups, tree_groups_size, tree_groups_offset);
-	check_error(cudaPeekAtLastError());
-	cuda_free((float *)tree_groups_size);
-	cuda_free((float *)tree_groups_offset);
 }
